@@ -18,6 +18,13 @@ from utils import run_benchmarks
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD
 from liger_kernel.utils import infer_device
 
+try:
+    from liger_kernel.ops.backends._cutile.ops import LigerFusedLinearJSDFunction as TileGymEnabledFusedLinearJSDFunction
+    from liger_kernel.ops.backends._cutile.ops import TILEGYM_AVAILABLE
+except ImportError:
+    TileGymEnabledFusedLinearJSDFunction = None
+    TILEGYM_AVAILABLE = False
+
 device = infer_device()
 
 
@@ -119,6 +126,37 @@ class LigerLMHeadJSD(torch.nn.Module):
         )
 
 
+class LigerLMHeadJSDWithTileGym(torch.nn.Module):
+    def __init__(
+        self,
+        H: int,
+        V: int,
+        dtype: torch.dtype,
+        device: torch.device,
+        beta: float = 0.5,
+        ignore_index: int = -100,
+        temperature: float = 1.0,
+    ):
+        super().__init__()
+        self.student_lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype, device=device)
+        self.teacher_lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype, device=device)
+        self.beta = beta
+        self.ignore_index = ignore_index
+        self.temperature = temperature
+
+    def forward(self, student_input, teacher_input, label=None):
+        return TileGymEnabledFusedLinearJSDFunction.apply(
+            student_input,
+            self.student_lin.weight,
+            teacher_input,
+            self.teacher_lin.weight,
+            label,
+            self.beta,
+            self.ignore_index,
+            self.temperature,
+        )
+
+
 def _setup_fused_linear_jsd(input: SingleBenchmarkRunInput):
     """Create input tensors and fused linear JSD from benchmark config."""
     cfg = input.extra_benchmark_config
@@ -145,6 +183,14 @@ def _setup_fused_linear_jsd(input: SingleBenchmarkRunInput):
         lm_head = liger_lm_head_jsd
     elif input.kernel_provider == "torch":
         lm_head = torch_lm_head_jsd
+    elif input.kernel_provider == "tilegym":
+        if not TILEGYM_AVAILABLE:
+            raise ImportError("tilegym is not available.")
+        tilegym_lm_head_jsd = LigerLMHeadJSDWithTileGym(H=H, V=V, dtype=dtype, device=device)
+        with torch.no_grad():
+            tilegym_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data.clone()
+            tilegym_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data.clone()
+        lm_head = tilegym_lm_head_jsd
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider} for FusedLinearJSD")
 
@@ -313,7 +359,7 @@ if __name__ == "__main__":
             "x_name": "model_config",
             "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
-            "kernel_providers": ["liger", "torch"],
+            "kernel_providers": ["liger", "torch"] + (["tilegym"] if TILEGYM_AVAILABLE else []),
             "extra_benchmark_configs": [
                 {
                     "model_configs": model_configs_info,
@@ -364,7 +410,7 @@ if __name__ == "__main__":
             "x_name": "BT",
             "x_label": "B * T",
             "x_values": [2**i for i in range(10, int(math.log2(config.batch_size * config.seq_len)) + 1)],
-            "kernel_providers": ["liger", "torch"],
+            "kernel_providers": ["liger", "torch"] + (["tilegym"] if TILEGYM_AVAILABLE else []),
             "extra_benchmark_configs": [
                 {
                     "hidden_size": model.hidden_size,
