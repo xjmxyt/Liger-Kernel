@@ -206,7 +206,7 @@ def bench_memory_fused_linear_jsd(input: SingleBenchmarkRunInput) -> SingleBench
         def full():
             with tilegym_enabled():
                 y = lm_head(student_input, teacher_input)
-            y.backward()
+                y.backward()
     else:
         def full():
             y = lm_head(student_input, teacher_input)
@@ -292,7 +292,7 @@ def bench_memory_fused_linear_jsd_model_config(input: SingleBenchmarkRunInput) -
         def full():
             with tilegym_enabled():
                 y = lm_head(student_input, teacher_input)
-            y.backward()
+                y.backward()
     else:
         def full():
             y = lm_head(student_input, teacher_input)

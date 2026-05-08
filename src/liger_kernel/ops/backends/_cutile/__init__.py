@@ -18,6 +18,7 @@ Two ways to enable the CuTile JSD kernels:
 
 import contextlib
 import importlib
+import threading
 
 # tilegym_enabled() is typically entered once per forward pass inside a
 # benchmark hot-loop (rep=100+). Without caching, every entry would re-execute
@@ -26,10 +27,16 @@ import importlib
 # the first successful _get_tilegym_refs() call so that all subsequent entries
 # are a single global read.
 #
+# Note: ALL_PATCHES is computed at ops/__init__.py import time. If tilegym is
+# not installed when that module is first imported it will remain empty for the
+# lifetime of the process — retrying _get_tilegym_refs() after a lazy install
+# will NOT pick up the newly installed package.
+#
 # Each element is a (module_obj, attr_name, replacement_class) triple built
-# from the PATCHES lists declared in each ops/<op>.py file.  The central code
+# from the PATCHES lists declared in each ops/<op>.py file. The central code
 # here is completely unaware of individual ops.
 _tilegym_refs = None
+_tilegym_refs_lock = threading.Lock()
 
 
 def _get_tilegym_refs():
@@ -37,7 +44,10 @@ def _get_tilegym_refs():
 
     Reads ALL_PATCHES from _cutile/ops/__init__.py (which aggregates PATCHES
     from every individual op module) and resolves the module path strings into
-    live module objects.  The result is cached so imports run exactly once.
+    live module objects. The result is cached so imports run exactly once.
+
+    Thread-safe: uses a double-checked lock so concurrent first-callers do not
+    both initialise the cache.
 
     Raises ImportError if no CuTile ops are available.
     """
@@ -45,21 +55,28 @@ def _get_tilegym_refs():
     if _tilegym_refs is not None:
         return _tilegym_refs
 
-    from liger_kernel.ops.backends._cutile.ops import ALL_PATCHES, _IMPORT_ERRORS
+    with _tilegym_refs_lock:
+        # Second check inside the lock — another thread may have initialised
+        # while we were waiting.
+        if _tilegym_refs is not None:
+            return _tilegym_refs
 
-    if not ALL_PATCHES:
-        # Do NOT set _tilegym_refs here. If tilegym is installed later in the
-        # same process (e.g. lazy pip install in a notebook), the next call
-        # will retry the import instead of returning a stale failure.
-        raise ImportError(
-            "tilegym cutile backend is not available. Install it from the ocean repo."
-        ) from (_IMPORT_ERRORS[0] if _IMPORT_ERRORS else None)
+        from liger_kernel.ops.backends._cutile.ops import ALL_PATCHES, _IMPORT_ERRORS
 
-    # Resolve module path strings to live module objects once.
-    _tilegym_refs = [
-        (importlib.import_module(mod_path), attr_name, replacement)
-        for mod_path, attr_name, replacement in ALL_PATCHES
-    ]
+        if not ALL_PATCHES:
+            # Do NOT set _tilegym_refs here: ALL_PATCHES is frozen at import
+            # time (see module docstring), but leaving _tilegym_refs as None
+            # keeps the error path consistent and avoids caching a broken state.
+            raise ImportError(
+                "tilegym cutile backend is not available. Install it from the ocean repo."
+            ) from (_IMPORT_ERRORS[0] if _IMPORT_ERRORS else None)
+
+        # Resolve module path strings to live module objects once.
+        _tilegym_refs = [
+            (importlib.import_module(mod_path), attr_name, replacement)
+            for mod_path, attr_name, replacement in ALL_PATCHES
+        ]
+
     return _tilegym_refs
 
 
@@ -80,7 +97,7 @@ def tilegym_enabled():
     """Temporarily replace Liger*Function classes with CuTile implementations.
 
     Patches every attr declared in the ops layer, yields, then restores
-    originals.  Safe to call repeatedly — module and class references are
+    originals. Safe to call repeatedly — module and class references are
     resolved once and cached by _get_tilegym_refs().
 
     Adding a new op requires no changes here — only in ops/__init__.py.

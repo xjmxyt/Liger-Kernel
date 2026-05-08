@@ -127,14 +127,14 @@ def bench_speed_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
 def bench_memory_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     _input, target, loss_fn = _setup_jsd(input)
 
-    def full():
-        y = loss_fn(_input, target)
-        y.backward(retain_graph=True)
-
     if input.kernel_provider == "tilegym":
         def full():
             with tilegym_enabled():
                 y = loss_fn(_input, target)
+                y.backward(retain_graph=True)
+    else:
+        def full():
+            y = loss_fn(_input, target)
             y.backward(retain_graph=True)
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
@@ -206,7 +206,7 @@ def bench_memory_jsd_model_config(input: SingleBenchmarkRunInput) -> SingleBench
         def full():
             with tilegym_enabled():
                 y = loss_fn(_input, target)
-            y.backward(retain_graph=True)
+                y.backward(retain_graph=True)
     else:
         def full():
             y = loss_fn(_input, target)
