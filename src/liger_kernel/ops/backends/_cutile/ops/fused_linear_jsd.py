@@ -1,20 +1,24 @@
 try:
     from tilegym.suites.liger.cutile.fused_linear_jsd import (
-        FusedLinearJSDFunction as LigerFusedLinearJSDFunction,
+        FusedLinearJSDFunction as _LigerFusedLinearJSDFunction,
     )
+    _IMPORT_ERROR = None
+except ImportError as exc:
+    _LigerFusedLinearJSDFunction = None
+    _IMPORT_ERROR = exc
 
-    # Each entry: (transformers_module_path, attr_name, replacement_class).
-    # The central tilegym_enabled() reads PATCHES from every op module so it
-    # never needs to know about individual ops.
-    PATCHES = [
+
+def patches():
+    """Return [(module_path, attr_name, replacement_class)] for the fused-linear-JSD op.
+
+    Raises ImportError if tilegym is not installed.
+    """
+    if _IMPORT_ERROR is not None:
+        raise ImportError("tilegym fused-linear-JSD backend unavailable") from _IMPORT_ERROR
+    return [
         (
             "liger_kernel.transformers.fused_linear_jsd",
             "LigerFusedLinearJSDFunction",
-            LigerFusedLinearJSDFunction,
+            _LigerFusedLinearJSDFunction,
         )
     ]
-    IMPORT_ERROR = None
-except ImportError as exc:
-    LigerFusedLinearJSDFunction = None
-    PATCHES = []
-    IMPORT_ERROR = exc

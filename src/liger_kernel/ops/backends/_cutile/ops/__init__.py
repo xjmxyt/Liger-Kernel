@@ -1,28 +1,32 @@
 """CuTile operator adapters — aggregates patch specs from all op modules.
 
 To add a new CuTile op:
-  1. Create ops/<op_name>.py that imports the tilegym class and defines:
-       PATCHES = [("liger_kernel.transformers.<op>", "LigerXxxFunction", LigerXxxFunction)]
-       IMPORT_ERROR = None   # or the ImportError if unavailable
+  1. Create ops/<op_name>.py that defines a patches() function:
+       def patches():
+           if <unavailable>:
+               raise ImportError(...) from _error
+           return [("liger_kernel.transformers.<op>", "LigerXxxFunction", cls)]
   2. Add two lines here:
-       from .<op_name> import PATCHES as _<OP>_PATCHES, IMPORT_ERROR as _<OP>_ERROR
-       ALL_PATCHES = ... + _<OP>_PATCHES
+       from .<op_name> import patches as _<op>_patches
+       and append _<op>_patches to _OP_PATCH_FNS.
 
 No changes to _cutile/__init__.py are ever needed.
 """
 
-from .fused_linear_jsd import IMPORT_ERROR as _FLJSD_ERROR
-from .fused_linear_jsd import PATCHES as _FLJSD_PATCHES
-from .jsd import IMPORT_ERROR as _JSD_ERROR
-from .jsd import PATCHES as _JSD_PATCHES
+from .fused_linear_jsd import patches as _fljsd_patches
+from .jsd import patches as _jsd_patches
 
-# --- add new op patches here, one line each ---
-ALL_PATCHES = _JSD_PATCHES + _FLJSD_PATCHES
+# To add a new op: import its patches() function and append it here.
+_OP_PATCH_FNS = [_jsd_patches, _fljsd_patches]
+
+ALL_PATCHES = []
+_IMPORT_ERRORS = []
+for _fn in _OP_PATCH_FNS:
+    try:
+        ALL_PATCHES.extend(_fn())
+    except ImportError as _e:
+        _IMPORT_ERRORS.append(_e)
 
 TILEGYM_AVAILABLE = bool(ALL_PATCHES)
-_IMPORT_ERRORS = [e for e in [_JSD_ERROR, _FLJSD_ERROR] if e is not None]
 
-# Only expose what callers actually need. The replacement classes (LigerJSDFunction
-# etc.) live inside PATCHES tuples and should not be imported directly from here —
-# doing so would bypass the patching mechanism entirely.
 __all__ = ["TILEGYM_AVAILABLE", "ALL_PATCHES"]

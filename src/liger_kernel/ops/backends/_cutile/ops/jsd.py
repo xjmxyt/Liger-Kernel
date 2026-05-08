@@ -1,12 +1,16 @@
 try:
-    from tilegym.suites.liger.cutile.jsd import JSDFunction as LigerJSDFunction
-
-    # Each entry: (transformers_module_path, attr_name, replacement_class).
-    # The central tilegym_enabled() reads PATCHES from every op module so it
-    # never needs to know about individual ops.
-    PATCHES = [("liger_kernel.transformers.jsd", "LigerJSDFunction", LigerJSDFunction)]
-    IMPORT_ERROR = None
+    from tilegym.suites.liger.cutile.jsd import JSDFunction as _LigerJSDFunction
+    _IMPORT_ERROR = None
 except ImportError as exc:
-    LigerJSDFunction = None
-    PATCHES = []
-    IMPORT_ERROR = exc
+    _LigerJSDFunction = None
+    _IMPORT_ERROR = exc
+
+
+def patches():
+    """Return [(module_path, attr_name, replacement_class)] for the JSD op.
+
+    Raises ImportError if tilegym is not installed.
+    """
+    if _IMPORT_ERROR is not None:
+        raise ImportError("tilegym JSD backend unavailable") from _IMPORT_ERROR
+    return [("liger_kernel.transformers.jsd", "LigerJSDFunction", _LigerJSDFunction)]
