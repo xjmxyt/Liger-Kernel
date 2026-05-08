@@ -18,9 +18,12 @@ Two ways to enable the CuTile JSD kernels:
 
 import contextlib
 
-# Module-level cache: populated on the first _get_tilegym_refs() call so that
-# repeated tilegym_enabled() entries (e.g. inside a benchmark hot-loop) pay
-# zero import overhead after the first invocation.
+# tilegym_enabled() is typically entered once per forward pass inside a
+# benchmark hot-loop (rep=100+). Without caching, every entry would re-execute
+# the import statements and availability checks. Python already caches modules
+# in sys.modules, but the repeated attribute lookups still add up. This tuple
+# is populated on the first successful _get_tilegym_refs() call so that all
+# subsequent entries are a single global read.
 _tilegym_refs = None
 
 
