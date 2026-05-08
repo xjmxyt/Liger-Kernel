@@ -1,4 +1,4 @@
-from . import PatchSpec
+from ._spec import PatchSpec
 
 try:
     from tilegym.suites.liger.cutile.jsd import JSDFunction as _LigerJSDFunction
