@@ -17,88 +17,82 @@ Two ways to enable the CuTile JSD kernels:
 """
 
 import contextlib
+import importlib
 
 # tilegym_enabled() is typically entered once per forward pass inside a
 # benchmark hot-loop (rep=100+). Without caching, every entry would re-execute
-# the import statements and availability checks. Python already caches modules
-# in sys.modules, but the repeated attribute lookups still add up. This tuple
-# is populated on the first successful _get_tilegym_refs() call so that all
-# subsequent entries are a single global read.
+# imports and availability checks. Python already caches modules in sys.modules,
+# but the repeated attribute lookups still add up. This list is populated on
+# the first successful _get_tilegym_refs() call so that all subsequent entries
+# are a single global read.
+#
+# Each element is a (module_obj, attr_name, replacement_class) triple built
+# from the PATCHES lists declared in each ops/<op>.py file.  The central code
+# here is completely unaware of individual ops.
 _tilegym_refs = None
 
 
 def _get_tilegym_refs():
-    """Resolve and cache tilegym class and module references (runs once).
+    """Resolve and cache (module, attr, replacement) triples for every CuTile op.
 
-    Returns a 4-tuple: (jsd_layer, fljsd_layer, LigerJSDFunction, LigerFusedLinearJSDFunction)
-    Raises ImportError if tilegym is not installed.
+    Reads ALL_PATCHES from _cutile/ops/__init__.py (which aggregates PATCHES
+    from every individual op module) and resolves the module path strings into
+    live module objects.  The result is cached so imports run exactly once.
+
+    Raises ImportError if no CuTile ops are available.
     """
     global _tilegym_refs
     if _tilegym_refs is not None:
         return _tilegym_refs
 
-    import liger_kernel.transformers.fused_linear_jsd as _fljsd_layer
-    import liger_kernel.transformers.jsd as _jsd_layer
-    from liger_kernel.ops.backends._cutile.ops.fused_linear_jsd import (
-        LigerFusedLinearJSDFunction,
-        _TILEGYM_AVAILABLE as _FLJSD_AVAILABLE,
-        _TILEGYM_IMPORT_ERROR as _FLJSD_ERROR,
-    )
-    from liger_kernel.ops.backends._cutile.ops.jsd import (
-        LigerJSDFunction,
-        _TILEGYM_AVAILABLE as _JSD_AVAILABLE,
-        _TILEGYM_IMPORT_ERROR as _JSD_ERROR,
-    )
+    from liger_kernel.ops.backends._cutile.ops import ALL_PATCHES, _IMPORT_ERRORS
 
-    if not (_JSD_AVAILABLE and _FLJSD_AVAILABLE):
+    if not ALL_PATCHES:
         # Do NOT set _tilegym_refs here. If tilegym is installed later in the
         # same process (e.g. lazy pip install in a notebook), the next call
         # will retry the import instead of returning a stale failure.
         raise ImportError(
             "tilegym cutile backend is not available. Install it from the ocean repo."
-        ) from (_JSD_ERROR or _FLJSD_ERROR)
+        ) from (_IMPORT_ERRORS[0] if _IMPORT_ERRORS else None)
 
-    _tilegym_refs = (_jsd_layer, _fljsd_layer, LigerJSDFunction, LigerFusedLinearJSDFunction)
+    # Resolve module path strings to live module objects once.
+    _tilegym_refs = [
+        (importlib.import_module(mod_path), attr_name, replacement)
+        for mod_path, attr_name, replacement in ALL_PATCHES
+    ]
     return _tilegym_refs
 
 
 def _patch_tilegym_classes():
-    """Replace LigerJSDFunction and LigerFusedLinearJSDFunction with CuTile classes.
+    """Replace Liger*Function classes with CuTile implementations.
 
-    Patches the class bindings in liger_kernel.transformers.jsd and
-    liger_kernel.transformers.fused_linear_jsd so that LigerJSD and
-    LigerFusedLinearJSD automatically use tilegym's public CuTile classes.
+    Iterates over every patch declared in the ops layer and applies it.
+    Adding a new op requires no changes here — only in ops/__init__.py.
 
     Raises ImportError if tilegym is not installed.
     """
-    jsd_layer, fljsd_layer, LigerJSDFunction, LigerFusedLinearJSDFunction = _get_tilegym_refs()
-    jsd_layer.LigerJSDFunction = LigerJSDFunction
-    fljsd_layer.LigerFusedLinearJSDFunction = LigerFusedLinearJSDFunction
+    for layer, attr_name, replacement in _get_tilegym_refs():
+        setattr(layer, attr_name, replacement)
 
 
 @contextlib.contextmanager
 def tilegym_enabled():
-    """Temporarily replace JSD Function classes with CuTile implementations.
+    """Temporarily replace Liger*Function classes with CuTile implementations.
 
-    Patches LigerJSDFunction and LigerFusedLinearJSDFunction in the
-    transformers layer. All modules are fully loaded by the time a with-block
-    is entered, so there is no circular import risk. Uses tilegym's public
-    JSDFunction / FusedLinearJSDFunction classes. Restores originals on exit.
+    Patches every attr declared in the ops layer, yields, then restores
+    originals.  Safe to call repeatedly — module and class references are
+    resolved once and cached by _get_tilegym_refs().
 
-    Module and class references are resolved once and cached, so entering
-    this context manager repeatedly (e.g. inside a benchmark loop) incurs
-    no import overhead after the first call.
+    Adding a new op requires no changes here — only in ops/__init__.py.
     """
-    jsd_layer, fljsd_layer, LigerJSDFunction, LigerFusedLinearJSDFunction = _get_tilegym_refs()
+    refs = _get_tilegym_refs()
+    originals = [(layer, attr_name, getattr(layer, attr_name)) for layer, attr_name, _ in refs]
 
-    orig_jsd_fn = jsd_layer.LigerJSDFunction
-    orig_fljsd_fn = fljsd_layer.LigerFusedLinearJSDFunction
-
-    jsd_layer.LigerJSDFunction = LigerJSDFunction
-    fljsd_layer.LigerFusedLinearJSDFunction = LigerFusedLinearJSDFunction
+    for layer, attr_name, replacement in refs:
+        setattr(layer, attr_name, replacement)
 
     try:
         yield
     finally:
-        jsd_layer.LigerJSDFunction = orig_jsd_fn
-        fljsd_layer.LigerFusedLinearJSDFunction = orig_fljsd_fn
+        for layer, attr_name, orig in originals:
+            setattr(layer, attr_name, orig)

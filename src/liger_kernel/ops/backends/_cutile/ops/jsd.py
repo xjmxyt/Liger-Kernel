@@ -1,9 +1,12 @@
 try:
     from tilegym.suites.liger.cutile.jsd import JSDFunction as LigerJSDFunction
 
-    _TILEGYM_IMPORT_ERROR = None
-    _TILEGYM_AVAILABLE = True
+    # Each entry: (transformers_module_path, attr_name, replacement_class).
+    # The central tilegym_enabled() reads PATCHES from every op module so it
+    # never needs to know about individual ops.
+    PATCHES = [("liger_kernel.transformers.jsd", "LigerJSDFunction", LigerJSDFunction)]
+    IMPORT_ERROR = None
 except ImportError as exc:
     LigerJSDFunction = None
-    _TILEGYM_IMPORT_ERROR = exc
-    _TILEGYM_AVAILABLE = False
+    PATCHES = []
+    IMPORT_ERROR = exc
