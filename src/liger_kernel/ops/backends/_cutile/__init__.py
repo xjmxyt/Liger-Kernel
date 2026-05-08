@@ -1,13 +1,13 @@
 """
 CuTile backend adapters for Liger-Kernel.
 
-Two ways to enable the CuTile JSD kernels:
+Two ways to enable CuTile kernels:
 
 1. Environment variable (zero code change):
        CUTILE_BACKEND=1 python train.py
    Checked in liger_kernel/transformers/__init__.py after all submodules are
-   loaded — patches LigerJSDFunction / LigerFusedLinearJSDFunction with
-   tilegym's public classes. No circular import risk.
+   loaded — patches Liger*Function class bindings with tilegym's public
+   classes. No circular import risk.
 
 2. Context manager (fine-grained control):
        from liger_kernel.ops.backends._cutile import tilegym_enabled
@@ -27,10 +27,10 @@ import threading
 # the first successful _get_tilegym_refs() call so that all subsequent entries
 # are a single global read.
 #
-# Note: ALL_PATCHES is computed at ops/__init__.py import time. If tilegym is
-# not installed when that module is first imported it will remain empty for the
-# lifetime of the process — retrying _get_tilegym_refs() after a lazy install
-# will NOT pick up the newly installed package.
+# Note: ALL_PATCHES is built at ops/__init__.py import time by calling each
+# op's patches() function. If tilegym is not installed at that point, ALL_PATCHES
+# will remain empty for the lifetime of the process — retrying _get_tilegym_refs()
+# after a lazy install will NOT pick up the newly installed package.
 #
 # Each element is a (module_obj, attr_name, replacement_class) triple resolved
 # from the PatchSpecs returned by each ops/<op>.py patches() function. The
@@ -42,9 +42,9 @@ _tilegym_refs_lock = threading.Lock()
 def _get_tilegym_refs():
     """Resolve and cache (module, attr, replacement) triples for every CuTile op.
 
-    Reads ALL_PATCHES from _cutile/ops/__init__.py (which aggregates PATCHES
-    from every individual op module) and resolves the module path strings into
-    live module objects. The result is cached so imports run exactly once.
+    Reads ALL_PATCHES from ops/__init__.py (which aggregates PatchSpecs from
+    every op's patches() function) and resolves the module path strings into
+    live module objects. The result is cached so resolution runs exactly once.
 
     Thread-safe: uses a double-checked lock so concurrent first-callers do not
     both initialise the cache.
@@ -65,8 +65,8 @@ def _get_tilegym_refs():
 
         if not ALL_PATCHES:
             # Do NOT set _tilegym_refs here: ALL_PATCHES is frozen at import
-            # time (see module docstring), but leaving _tilegym_refs as None
-            # keeps the error path consistent and avoids caching a broken state.
+            # time (see _tilegym_refs note above), so leaving _tilegym_refs as
+            # None avoids caching a broken state.
             raise ImportError(
                 "tilegym cutile backend is not available. Install it from the ocean repo."
             ) from (_IMPORT_ERRORS[0] if _IMPORT_ERRORS else None)
