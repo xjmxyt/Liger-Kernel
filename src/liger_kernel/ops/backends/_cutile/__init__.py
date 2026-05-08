@@ -32,9 +32,9 @@ import threading
 # lifetime of the process — retrying _get_tilegym_refs() after a lazy install
 # will NOT pick up the newly installed package.
 #
-# Each element is a (module_obj, attr_name, replacement_class) triple built
-# from the PATCHES lists declared in each ops/<op>.py file. The central code
-# here is completely unaware of individual ops.
+# Each element is a (module_obj, attr_name, replacement_class) triple resolved
+# from the PatchSpecs returned by each ops/<op>.py patches() function. The
+# central code here is completely unaware of individual ops.
 _tilegym_refs = None
 _tilegym_refs_lock = threading.Lock()
 
@@ -73,8 +73,8 @@ def _get_tilegym_refs():
 
         # Resolve module path strings to live module objects once.
         _tilegym_refs = [
-            (importlib.import_module(mod_path), attr_name, replacement)
-            for mod_path, attr_name, replacement in ALL_PATCHES
+            (importlib.import_module(spec.module_path), spec.attr_name, spec.replacement)
+            for spec in ALL_PATCHES
         ]
 
     return _tilegym_refs
