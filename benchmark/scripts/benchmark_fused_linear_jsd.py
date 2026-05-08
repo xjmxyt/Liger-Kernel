@@ -1,3 +1,4 @@
+import contextlib
 import math
 
 import torch
@@ -19,10 +20,10 @@ from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD
 from liger_kernel.utils import infer_device
 
 try:
-    from liger_kernel.ops.backends._cutile.ops import LigerFusedLinearJSDFunction as TileGymEnabledFusedLinearJSDFunction
+    from liger_kernel.ops.backends._cutile import tilegym_enabled
     from liger_kernel.ops.backends._cutile.ops import TILEGYM_AVAILABLE
 except ImportError:
-    TileGymEnabledFusedLinearJSDFunction = None
+    tilegym_enabled = None
     TILEGYM_AVAILABLE = False
 
 device = infer_device()
@@ -126,35 +127,11 @@ class LigerLMHeadJSD(torch.nn.Module):
         )
 
 
-class LigerLMHeadJSDWithTileGym(torch.nn.Module):
-    def __init__(
-        self,
-        H: int,
-        V: int,
-        dtype: torch.dtype,
-        device: torch.device,
-        beta: float = 0.5,
-        ignore_index: int = -100,
-        temperature: float = 1.0,
-    ):
-        super().__init__()
-        self.student_lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype, device=device)
-        self.teacher_lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype, device=device)
-        self.beta = beta
-        self.ignore_index = ignore_index
-        self.temperature = temperature
-
-    def forward(self, student_input, teacher_input, label=None):
-        return TileGymEnabledFusedLinearJSDFunction.apply(
-            student_input,
-            self.student_lin.weight,
-            teacher_input,
-            self.teacher_lin.weight,
-            label,
-            self.beta,
-            self.ignore_index,
-            self.temperature,
-        )
+def _tilegym_ctx(provider):
+    """Return tilegym_enabled() for tilegym provider, nullcontext otherwise."""
+    if provider == "tilegym" and tilegym_enabled is not None:
+        return tilegym_enabled()
+    return contextlib.nullcontext()
 
 
 def _setup_fused_linear_jsd(input: SingleBenchmarkRunInput):
@@ -179,18 +156,12 @@ def _setup_fused_linear_jsd(input: SingleBenchmarkRunInput):
     student_input = torch.rand(BT, H, requires_grad=True, dtype=dtype, device=device)
     teacher_input = torch.rand(BT, H, dtype=dtype, device=device)
 
-    if input.kernel_provider == "liger":
+    if input.kernel_provider in ("liger", "tilegym"):
+        if input.kernel_provider == "tilegym" and not TILEGYM_AVAILABLE:
+            raise ImportError("tilegym is not available.")
         lm_head = liger_lm_head_jsd
     elif input.kernel_provider == "torch":
         lm_head = torch_lm_head_jsd
-    elif input.kernel_provider == "tilegym":
-        if not TILEGYM_AVAILABLE:
-            raise ImportError("tilegym is not available.")
-        tilegym_lm_head_jsd = LigerLMHeadJSDWithTileGym(H=H, V=V, dtype=dtype, device=device)
-        with torch.no_grad():
-            tilegym_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data.clone()
-            tilegym_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data.clone()
-        lm_head = tilegym_lm_head_jsd
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider} for FusedLinearJSD")
 
@@ -204,25 +175,26 @@ def bench_speed_fused_linear_jsd(input: SingleBenchmarkRunInput) -> SingleBenchm
     def fwd():
         return lm_head(student_input, teacher_input)
 
-    if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
-    elif mode == "backward":
-        y = fwd()
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(retain_graph=True),
-            grad_to_none=[student_input],
-            rep=100,
-            quantiles=QUANTILES,
-        )
-    elif mode == "full":
-
-        def full():
+    with _tilegym_ctx(input.kernel_provider):
+        if mode == "forward":
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
+        elif mode == "backward":
             y = fwd()
-            y.backward()
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(
+                lambda: y.backward(retain_graph=True),
+                grad_to_none=[student_input],
+                rep=100,
+                quantiles=QUANTILES,
+            )
+        elif mode == "full":
 
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, rep=100, quantiles=QUANTILES)
-    else:
-        raise ValueError(f"Unsupported mode: {mode}")
+            def full():
+                y = fwd()
+                y.backward()
+
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(full, rep=100, quantiles=QUANTILES)
+        else:
+            raise ValueError(f"Unsupported mode: {mode}")
 
     return SingleBenchmarkRunOutput(
         y_20=ms_20,
@@ -238,7 +210,8 @@ def bench_memory_fused_linear_jsd(input: SingleBenchmarkRunInput) -> SingleBench
         y = lm_head(student_input, teacher_input)
         y.backward()
 
-    mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
+    with _tilegym_ctx(input.kernel_provider):
+        mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
     return SingleBenchmarkRunOutput(
         y_20=mem_20,
         y_50=mem_50,
@@ -270,34 +243,35 @@ def bench_speed_fused_linear_jsd_model_config(input: SingleBenchmarkRunInput) ->
     def fwd():
         return lm_head(student_input, teacher_input)
 
-    if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            fwd,
-            rep=100,
-            quantiles=QUANTILES,
-        )
-    elif mode == "backward":
-        y = fwd()
-
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(retain_graph=True),
-            grad_to_none=[student_input],
-            rep=100,
-            quantiles=QUANTILES,
-        )
-    elif mode == "full":
-
-        def full():
+    with _tilegym_ctx(input.kernel_provider):
+        if mode == "forward":
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(
+                fwd,
+                rep=100,
+                quantiles=QUANTILES,
+            )
+        elif mode == "backward":
             y = fwd()
-            y.backward()
 
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            full,
-            rep=100,
-            quantiles=QUANTILES,
-        )
-    else:
-        raise ValueError(f"Unsupported mode: {mode}")
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(
+                lambda: y.backward(retain_graph=True),
+                grad_to_none=[student_input],
+                rep=100,
+                quantiles=QUANTILES,
+            )
+        elif mode == "full":
+
+            def full():
+                y = fwd()
+                y.backward()
+
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(
+                full,
+                rep=100,
+                quantiles=QUANTILES,
+            )
+        else:
+            raise ValueError(f"Unsupported mode: {mode}")
 
     return SingleBenchmarkRunOutput(
         y_20=ms_20,
@@ -313,7 +287,8 @@ def bench_memory_fused_linear_jsd_model_config(input: SingleBenchmarkRunInput) -
         y = lm_head(student_input, teacher_input)
         y.backward()
 
-    mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
+    with _tilegym_ctx(input.kernel_provider):
+        mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
     return SingleBenchmarkRunOutput(
         y_20=mem_20,
         y_50=mem_50,

@@ -1,3 +1,4 @@
+import contextlib
 import math
 
 import torch
@@ -19,10 +20,10 @@ from liger_kernel.transformers.jsd import LigerJSD
 from liger_kernel.utils import infer_device
 
 try:
-    from liger_kernel.ops.backends._cutile.ops import LigerJSDFunction as TileGymEnabledJSDFunction
+    from liger_kernel.ops.backends._cutile import tilegym_enabled
     from liger_kernel.ops.backends._cutile.ops import TILEGYM_AVAILABLE
 except ImportError:
-    TileGymEnabledJSDFunction = None
+    tilegym_enabled = None
     TILEGYM_AVAILABLE = False
 
 device = infer_device()
@@ -66,16 +67,6 @@ class TorchJSD(torch.nn.Module):
         return loss.to(self.dtype)
 
 
-class LigerJSDWithTileGym(torch.nn.Module):
-    def __init__(self, beta=0.5, ignore_index=-100):
-        super().__init__()
-        self.beta = beta
-        self.ignore_index = ignore_index
-
-    def forward(self, input, target, shift_labels=None):
-        return TileGymEnabledJSDFunction.apply(input, target, shift_labels, self.beta, self.ignore_index)
-
-
 def _setup_jsd(input: SingleBenchmarkRunInput):
     """Create input tensors and JSD loss from benchmark config."""
     cfg = input.extra_benchmark_config
@@ -84,17 +75,22 @@ def _setup_jsd(input: SingleBenchmarkRunInput):
     _input = torch.randn(BT, V, requires_grad=True, device=device).log_softmax(dim=-1)
     target = torch.randn(BT, V, device=device).log_softmax(dim=-1)
 
-    if input.kernel_provider == "liger":
+    if input.kernel_provider in ("liger", "tilegym"):
+        if input.kernel_provider == "tilegym" and not TILEGYM_AVAILABLE:
+            raise ImportError("tilegym is not available.")
         loss_fn = LigerJSD()
     elif input.kernel_provider == "torch":
         loss_fn = TorchJSD()
-    elif input.kernel_provider == "tilegym":
-        if not TILEGYM_AVAILABLE:
-            raise ImportError("tilegym is not available.")
-        loss_fn = LigerJSDWithTileGym()
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider} for JSD")
     return _input, target, loss_fn
+
+
+def _tilegym_ctx(provider):
+    """Return tilegym_enabled() for tilegym provider, nullcontext otherwise."""
+    if provider == "tilegym" and tilegym_enabled is not None:
+        return tilegym_enabled()
+    return contextlib.nullcontext()
 
 
 def bench_speed_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -104,25 +100,26 @@ def bench_speed_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     def fwd():
         return loss_fn(_input, target)
 
-    if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
-    elif mode == "backward":
-        y = fwd()
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(retain_graph=True),
-            quantiles=QUANTILES,
-            grad_to_none=[_input],
-            rep=100,
-        )
-    elif mode == "full":
-
-        def full():
+    with _tilegym_ctx(input.kernel_provider):
+        if mode == "forward":
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
+        elif mode == "backward":
             y = fwd()
-            y.backward(retain_graph=True)
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(
+                lambda: y.backward(retain_graph=True),
+                quantiles=QUANTILES,
+                grad_to_none=[_input],
+                rep=100,
+            )
+        elif mode == "full":
 
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
-    else:
-        raise ValueError(f"Unsupported mode: {mode}")
+            def full():
+                y = fwd()
+                y.backward(retain_graph=True)
+
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
+        else:
+            raise ValueError(f"Unsupported mode: {mode}")
 
     return SingleBenchmarkRunOutput(
         y_20=ms_20,
@@ -138,7 +135,8 @@ def bench_memory_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
         y = loss_fn(_input, target)
         y.backward(retain_graph=True)
 
-    mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
+    with _tilegym_ctx(input.kernel_provider):
+        mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
     return SingleBenchmarkRunOutput(
         y_20=mem_20,
         y_50=mem_50,
@@ -168,25 +166,26 @@ def bench_speed_jsd_model_config(input: SingleBenchmarkRunInput) -> SingleBenchm
     def fwd():
         return loss_fn(_input, target)
 
-    if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
-    elif mode == "backward":
-        y = fwd()
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(retain_graph=True),
-            quantiles=QUANTILES,
-            grad_to_none=[_input],
-            rep=100,
-        )
-    elif mode == "full":
-
-        def full():
+    with _tilegym_ctx(input.kernel_provider):
+        if mode == "forward":
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
+        elif mode == "backward":
             y = fwd()
-            y.backward(retain_graph=True)
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(
+                lambda: y.backward(retain_graph=True),
+                quantiles=QUANTILES,
+                grad_to_none=[_input],
+                rep=100,
+            )
+        elif mode == "full":
 
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
-    else:
-        raise ValueError(f"Unsupported mode: {mode}")
+            def full():
+                y = fwd()
+                y.backward(retain_graph=True)
+
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
+        else:
+            raise ValueError(f"Unsupported mode: {mode}")
 
     return SingleBenchmarkRunOutput(
         y_20=ms_20,
@@ -202,7 +201,8 @@ def bench_memory_jsd_model_config(input: SingleBenchmarkRunInput) -> SingleBench
         y = loss_fn(_input, target)
         y.backward(retain_graph=True)
 
-    mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
+    with _tilegym_ctx(input.kernel_provider):
+        mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
 
     return SingleBenchmarkRunOutput(
         y_20=mem_20,

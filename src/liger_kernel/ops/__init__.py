@@ -24,8 +24,6 @@ Note: Direct imports from submodules (e.g., from liger_kernel.ops.geglu import .
       are NOT affected by the replacement mechanism.
 """
 
-import os
-
 # =============================================================================
 # Import default implementations
 # Both Function classes and kernel functions are imported here.
@@ -118,11 +116,11 @@ def _replace_with_vendor_ops():
     Otherwise, all public symbols (not starting with _) are auto-discovered.
 
     Note: Vendor can both override existing ops AND add new vendor-specific ops.
-    """
-    cutile_backend = os.getenv("CUTILE_BACKEND", "").strip().lower()
-    cutile_enabled = cutile_backend in {"1", "true", "yes", "on", "cutile"}
-    device = None
 
+    Note: CuTile backend (tilegym) is enabled via CUTILE_BACKEND=1 env var,
+    handled in liger_kernel/transformers/__init__.py after all submodules load.
+    Use the tilegym_enabled() context manager for fine-grained control.
+    """
     try:
         import importlib
         from liger_kernel.ops.backends import get_vendor_for_device
@@ -141,12 +139,6 @@ def _replace_with_vendor_ops():
                 globals()[name] = getattr(backend_ops, name)
 
         device = infer_device()
-        if device == "cuda" and cutile_enabled:
-            cutile_ops = importlib.import_module("liger_kernel.ops.backends._cutile.ops")
-            if not getattr(cutile_ops, "TILEGYM_AVAILABLE", False):
-                cutile_ops._require_tilegym()
-            _apply_ops_module(cutile_ops)
-            return
 
         # Look up vendor info for this device
         vendor_info = get_vendor_for_device(device)
@@ -156,8 +148,6 @@ def _replace_with_vendor_ops():
         _apply_ops_module(importlib.import_module(vendor_info.module_path))
 
     except ImportError:
-        if device == "cuda" and cutile_enabled:
-            raise
         # Vendor module not available, use default implementations
         pass
 

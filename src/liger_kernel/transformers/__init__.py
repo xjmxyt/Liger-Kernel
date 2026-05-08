@@ -195,6 +195,23 @@ __all__ = [
     "LigerSparsemax",
 ]
 
+# Apply CuTile backend if requested via environment variable.
+# All submodules above are already loaded at this point, so patching
+# liger_kernel.transformers.jsd / fused_linear_jsd is safe (no circular imports).
+import os as _os
+
+_cutile_backend = _os.getenv("CUTILE_BACKEND", "").strip().lower()
+if _cutile_backend in {"1", "true", "yes", "on", "cutile"}:
+    try:
+        from liger_kernel.ops.backends._cutile import _patch_tilegym_classes
+
+        _patch_tilegym_classes()
+    except ImportError as _exc:
+        raise ImportError(
+            "CUTILE_BACKEND is set but tilegym is not available. "
+            "Install it from the ocean repo."
+        ) from _exc
+
 # Add transformer-dependent symbols only if available
 if _TRANSFORMERS_AVAILABLE:
     __all__.extend(

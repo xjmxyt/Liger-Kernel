@@ -1,22 +1,14 @@
-"""CuTile JSD operator adapters."""
+"""CuTile JSD operator adapters — re-exports tilegym's public Function classes."""
 
-from . import fused_linear_jsd as _fused_linear_jsd
-from . import jsd as _jsd
+from .fused_linear_jsd import _TILEGYM_AVAILABLE as _FLJSD_AVAILABLE
 from .fused_linear_jsd import LigerFusedLinearJSDFunction
+from .jsd import _TILEGYM_AVAILABLE as _JSD_AVAILABLE
 from .jsd import LigerJSDFunction
 
-TILEGYM_AVAILABLE = _jsd._TILEGYM_AVAILABLE and _fused_linear_jsd._TILEGYM_AVAILABLE
-
-
-def _require_tilegym() -> None:
-    if TILEGYM_AVAILABLE:
-        return
-
-    import_error = _jsd._TILEGYM_IMPORT_ERROR or _fused_linear_jsd._TILEGYM_IMPORT_ERROR
-    raise ImportError("tilegym cutile backend is not available. Install it from the ocean repo.") from import_error
-
+TILEGYM_AVAILABLE = _JSD_AVAILABLE and _FLJSD_AVAILABLE
 
 __all__ = [
-    "LigerFusedLinearJSDFunction",
     "LigerJSDFunction",
+    "LigerFusedLinearJSDFunction",
+    "TILEGYM_AVAILABLE",
 ]
