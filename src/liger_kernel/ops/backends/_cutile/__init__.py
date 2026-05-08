@@ -18,6 +18,43 @@ Two ways to enable the CuTile JSD kernels:
 
 import contextlib
 
+# Module-level cache: populated on the first _get_tilegym_refs() call so that
+# repeated tilegym_enabled() entries (e.g. inside a benchmark hot-loop) pay
+# zero import overhead after the first invocation.
+_tilegym_refs = None
+
+
+def _get_tilegym_refs():
+    """Resolve and cache tilegym class and module references (runs once).
+
+    Returns a 4-tuple: (jsd_layer, fljsd_layer, LigerJSDFunction, LigerFusedLinearJSDFunction)
+    Raises ImportError if tilegym is not installed.
+    """
+    global _tilegym_refs
+    if _tilegym_refs is not None:
+        return _tilegym_refs
+
+    import liger_kernel.transformers.fused_linear_jsd as _fljsd_layer
+    import liger_kernel.transformers.jsd as _jsd_layer
+    from liger_kernel.ops.backends._cutile.ops.fused_linear_jsd import (
+        LigerFusedLinearJSDFunction,
+        _TILEGYM_AVAILABLE as _FLJSD_AVAILABLE,
+        _TILEGYM_IMPORT_ERROR as _FLJSD_ERROR,
+    )
+    from liger_kernel.ops.backends._cutile.ops.jsd import (
+        LigerJSDFunction,
+        _TILEGYM_AVAILABLE as _JSD_AVAILABLE,
+        _TILEGYM_IMPORT_ERROR as _JSD_ERROR,
+    )
+
+    if not (_JSD_AVAILABLE and _FLJSD_AVAILABLE):
+        raise ImportError(
+            "tilegym cutile backend is not available. Install it from the ocean repo."
+        ) from (_JSD_ERROR or _FLJSD_ERROR)
+
+    _tilegym_refs = (_jsd_layer, _fljsd_layer, LigerJSDFunction, LigerFusedLinearJSDFunction)
+    return _tilegym_refs
+
 
 def _patch_tilegym_classes():
     """Replace LigerJSDFunction and LigerFusedLinearJSDFunction with CuTile classes.
@@ -28,26 +65,9 @@ def _patch_tilegym_classes():
 
     Raises ImportError if tilegym is not installed.
     """
-    import liger_kernel.transformers.fused_linear_jsd as _fljsd_layer
-    import liger_kernel.transformers.jsd as _jsd_layer
-    from liger_kernel.ops.backends._cutile.ops.fused_linear_jsd import (
-        LigerFusedLinearJSDFunction,
-        _TILEGYM_AVAILABLE as _FLJSD_AVAILABLE,
-        _TILEGYM_IMPORT_ERROR as _FLJSD_ERROR,
-    )
-    from liger_kernel.ops.backends._cutile.ops.jsd import (
-        LigerJSDFunction,
-        _TILEGYM_AVAILABLE as _JSD_AVAILABLE,
-        _TILEGYM_IMPORT_ERROR as _JSD_ERROR,
-    )
-
-    if not (_JSD_AVAILABLE and _FLJSD_AVAILABLE):
-        raise ImportError(
-            "tilegym cutile backend is not available. Install it from the ocean repo."
-        ) from (_JSD_ERROR or _FLJSD_ERROR)
-
-    _jsd_layer.LigerJSDFunction = LigerJSDFunction
-    _fljsd_layer.LigerFusedLinearJSDFunction = LigerFusedLinearJSDFunction
+    jsd_layer, fljsd_layer, LigerJSDFunction, LigerFusedLinearJSDFunction = _get_tilegym_refs()
+    jsd_layer.LigerJSDFunction = LigerJSDFunction
+    fljsd_layer.LigerFusedLinearJSDFunction = LigerFusedLinearJSDFunction
 
 
 @contextlib.contextmanager
@@ -58,35 +78,21 @@ def tilegym_enabled():
     transformers layer. All modules are fully loaded by the time a with-block
     is entered, so there is no circular import risk. Uses tilegym's public
     JSDFunction / FusedLinearJSDFunction classes. Restores originals on exit.
+
+    Module and class references are resolved once and cached, so entering
+    this context manager repeatedly (e.g. inside a benchmark loop) incurs
+    no import overhead after the first call.
     """
-    import liger_kernel.transformers.fused_linear_jsd as _fljsd_layer
-    import liger_kernel.transformers.jsd as _jsd_layer
-    from liger_kernel.ops.backends._cutile.ops.fused_linear_jsd import (
-        LigerFusedLinearJSDFunction,
-        _TILEGYM_AVAILABLE as _FLJSD_AVAILABLE,
-        _TILEGYM_IMPORT_ERROR as _FLJSD_ERROR,
-    )
-    from liger_kernel.ops.backends._cutile.ops.jsd import (
-        LigerJSDFunction,
-        _TILEGYM_AVAILABLE as _JSD_AVAILABLE,
-        _TILEGYM_IMPORT_ERROR as _JSD_ERROR,
-    )
+    jsd_layer, fljsd_layer, LigerJSDFunction, LigerFusedLinearJSDFunction = _get_tilegym_refs()
 
-    if not (_JSD_AVAILABLE and _FLJSD_AVAILABLE):
-        raise ImportError(
-            "tilegym cutile backend is not available. Install it from the ocean repo."
-        ) from (_JSD_ERROR or _FLJSD_ERROR)
+    orig_jsd_fn = jsd_layer.LigerJSDFunction
+    orig_fljsd_fn = fljsd_layer.LigerFusedLinearJSDFunction
 
-    orig = {
-        "jsd_fn": _jsd_layer.LigerJSDFunction,
-        "fljsd_fn": _fljsd_layer.LigerFusedLinearJSDFunction,
-    }
-
-    _jsd_layer.LigerJSDFunction = LigerJSDFunction
-    _fljsd_layer.LigerFusedLinearJSDFunction = LigerFusedLinearJSDFunction
+    jsd_layer.LigerJSDFunction = LigerJSDFunction
+    fljsd_layer.LigerFusedLinearJSDFunction = LigerFusedLinearJSDFunction
 
     try:
         yield
     finally:
-        _jsd_layer.LigerJSDFunction = orig["jsd_fn"]
-        _fljsd_layer.LigerFusedLinearJSDFunction = orig["fljsd_fn"]
+        jsd_layer.LigerJSDFunction = orig_jsd_fn
+        fljsd_layer.LigerFusedLinearJSDFunction = orig_fljsd_fn
