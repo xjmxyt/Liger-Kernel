@@ -48,6 +48,9 @@ def _get_tilegym_refs():
     )
 
     if not (_JSD_AVAILABLE and _FLJSD_AVAILABLE):
+        # Do NOT set _tilegym_refs here. If tilegym is installed later in the
+        # same process (e.g. lazy pip install in a notebook), the next call
+        # will retry the import instead of returning a stale failure.
         raise ImportError(
             "tilegym cutile backend is not available. Install it from the ocean repo."
         ) from (_JSD_ERROR or _FLJSD_ERROR)
