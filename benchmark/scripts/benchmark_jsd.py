@@ -1,4 +1,3 @@
-import contextlib
 import math
 
 import torch
@@ -86,40 +85,37 @@ def _setup_jsd(input: SingleBenchmarkRunInput):
     return _input, target, loss_fn
 
 
-def _tilegym_ctx(provider):
-    """Return tilegym_enabled() for tilegym provider, nullcontext otherwise."""
-    if provider == "tilegym" and tilegym_enabled is not None:
-        return tilegym_enabled()
-    return contextlib.nullcontext()
-
-
 def bench_speed_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     _input, target, loss_fn = _setup_jsd(input)
     mode = input.kernel_operation_mode
 
-    def fwd():
-        return loss_fn(_input, target)
+    if input.kernel_provider == "tilegym":
+        def fwd():
+            with tilegym_enabled():
+                return loss_fn(_input, target)
+    else:
+        def fwd():
+            return loss_fn(_input, target)
 
-    with _tilegym_ctx(input.kernel_provider):
-        if mode == "forward":
-            ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
-        elif mode == "backward":
+    if mode == "forward":
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
+    elif mode == "backward":
+        y = fwd()
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            lambda: y.backward(retain_graph=True),
+            quantiles=QUANTILES,
+            grad_to_none=[_input],
+            rep=100,
+        )
+    elif mode == "full":
+
+        def full():
             y = fwd()
-            ms_50, ms_20, ms_80 = triton.testing.do_bench(
-                lambda: y.backward(retain_graph=True),
-                quantiles=QUANTILES,
-                grad_to_none=[_input],
-                rep=100,
-            )
-        elif mode == "full":
+            y.backward(retain_graph=True)
 
-            def full():
-                y = fwd()
-                y.backward(retain_graph=True)
-
-            ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
-        else:
-            raise ValueError(f"Unsupported mode: {mode}")
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
 
     return SingleBenchmarkRunOutput(
         y_20=ms_20,
@@ -135,8 +131,13 @@ def bench_memory_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
         y = loss_fn(_input, target)
         y.backward(retain_graph=True)
 
-    with _tilegym_ctx(input.kernel_provider):
-        mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
+    if input.kernel_provider == "tilegym":
+        def full():
+            with tilegym_enabled():
+                y = loss_fn(_input, target)
+            y.backward(retain_graph=True)
+
+    mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
     return SingleBenchmarkRunOutput(
         y_20=mem_20,
         y_50=mem_50,
@@ -163,29 +164,33 @@ def bench_speed_jsd_model_config(input: SingleBenchmarkRunInput) -> SingleBenchm
     _input, target, loss_fn = _resolve_model_config_jsd(input)
     mode = input.kernel_operation_mode
 
-    def fwd():
-        return loss_fn(_input, target)
+    if input.kernel_provider == "tilegym":
+        def fwd():
+            with tilegym_enabled():
+                return loss_fn(_input, target)
+    else:
+        def fwd():
+            return loss_fn(_input, target)
 
-    with _tilegym_ctx(input.kernel_provider):
-        if mode == "forward":
-            ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
-        elif mode == "backward":
+    if mode == "forward":
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
+    elif mode == "backward":
+        y = fwd()
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            lambda: y.backward(retain_graph=True),
+            quantiles=QUANTILES,
+            grad_to_none=[_input],
+            rep=100,
+        )
+    elif mode == "full":
+
+        def full():
             y = fwd()
-            ms_50, ms_20, ms_80 = triton.testing.do_bench(
-                lambda: y.backward(retain_graph=True),
-                quantiles=QUANTILES,
-                grad_to_none=[_input],
-                rep=100,
-            )
-        elif mode == "full":
+            y.backward(retain_graph=True)
 
-            def full():
-                y = fwd()
-                y.backward(retain_graph=True)
-
-            ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
-        else:
-            raise ValueError(f"Unsupported mode: {mode}")
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
 
     return SingleBenchmarkRunOutput(
         y_20=ms_20,
@@ -197,13 +202,17 @@ def bench_speed_jsd_model_config(input: SingleBenchmarkRunInput) -> SingleBenchm
 def bench_memory_jsd_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     _input, target, loss_fn = _resolve_model_config_jsd(input)
 
-    def full():
-        y = loss_fn(_input, target)
-        y.backward(retain_graph=True)
+    if input.kernel_provider == "tilegym":
+        def full():
+            with tilegym_enabled():
+                y = loss_fn(_input, target)
+            y.backward(retain_graph=True)
+    else:
+        def full():
+            y = loss_fn(_input, target)
+            y.backward(retain_graph=True)
 
-    with _tilegym_ctx(input.kernel_provider):
-        mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-
+    mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
     return SingleBenchmarkRunOutput(
         y_20=mem_20,
         y_50=mem_50,
