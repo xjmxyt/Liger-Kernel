@@ -18,6 +18,13 @@ from utils import run_benchmarks
 from liger_kernel.transformers.jsd import LigerJSD
 from liger_kernel.utils import infer_device
 
+try:
+    from liger_kernel.ops.backends._cutile import tilegym_enabled
+    from liger_kernel.ops.backends._cutile.ops import TILEGYM_AVAILABLE
+except ImportError:
+    tilegym_enabled = None
+    TILEGYM_AVAILABLE = False
+
 device = infer_device()
 
 
@@ -67,7 +74,9 @@ def _setup_jsd(input: SingleBenchmarkRunInput):
     _input = torch.randn(BT, V, requires_grad=True, device=device).log_softmax(dim=-1)
     target = torch.randn(BT, V, device=device).log_softmax(dim=-1)
 
-    if input.kernel_provider == "liger":
+    if input.kernel_provider in ("liger", "tilegym"):
+        if input.kernel_provider == "tilegym" and not TILEGYM_AVAILABLE:
+            raise ImportError("tilegym is not available.")
         loss_fn = LigerJSD()
     elif input.kernel_provider == "torch":
         loss_fn = TorchJSD()
@@ -80,8 +89,13 @@ def bench_speed_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     _input, target, loss_fn = _setup_jsd(input)
     mode = input.kernel_operation_mode
 
-    def fwd():
-        return loss_fn(_input, target)
+    if input.kernel_provider == "tilegym":
+        def fwd():
+            with tilegym_enabled():
+                return loss_fn(_input, target)
+    else:
+        def fwd():
+            return loss_fn(_input, target)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
@@ -113,9 +127,15 @@ def bench_speed_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
 def bench_memory_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     _input, target, loss_fn = _setup_jsd(input)
 
-    def full():
-        y = loss_fn(_input, target)
-        y.backward(retain_graph=True)
+    if input.kernel_provider == "tilegym":
+        def full():
+            with tilegym_enabled():
+                y = loss_fn(_input, target)
+                y.backward(retain_graph=True)
+    else:
+        def full():
+            y = loss_fn(_input, target)
+            y.backward(retain_graph=True)
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
     return SingleBenchmarkRunOutput(
@@ -144,8 +164,13 @@ def bench_speed_jsd_model_config(input: SingleBenchmarkRunInput) -> SingleBenchm
     _input, target, loss_fn = _resolve_model_config_jsd(input)
     mode = input.kernel_operation_mode
 
-    def fwd():
-        return loss_fn(_input, target)
+    if input.kernel_provider == "tilegym":
+        def fwd():
+            with tilegym_enabled():
+                return loss_fn(_input, target)
+    else:
+        def fwd():
+            return loss_fn(_input, target)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
@@ -177,12 +202,17 @@ def bench_speed_jsd_model_config(input: SingleBenchmarkRunInput) -> SingleBenchm
 def bench_memory_jsd_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     _input, target, loss_fn = _resolve_model_config_jsd(input)
 
-    def full():
-        y = loss_fn(_input, target)
-        y.backward(retain_graph=True)
+    if input.kernel_provider == "tilegym":
+        def full():
+            with tilegym_enabled():
+                y = loss_fn(_input, target)
+                y.backward(retain_graph=True)
+    else:
+        def full():
+            y = loss_fn(_input, target)
+            y.backward(retain_graph=True)
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-
     return SingleBenchmarkRunOutput(
         y_20=mem_20,
         y_50=mem_50,
@@ -224,7 +254,7 @@ if __name__ == "__main__":
             "x_name": "model_config",
             "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
-            "kernel_providers": ["liger", "torch"],
+            "kernel_providers": ["liger", "torch"] + (["tilegym"] if TILEGYM_AVAILABLE else []),
             "extra_benchmark_configs": [
                 {
                     "model_configs": model_configs_info,
@@ -273,7 +303,7 @@ if __name__ == "__main__":
             "x_name": "BT",
             "x_label": "B * T",
             "x_values": [2**i for i in range(10, int(math.log2(config.batch_size * config.seq_len)) + 1)],
-            "kernel_providers": ["liger", "torch"],
+            "kernel_providers": ["liger", "torch"] + (["tilegym"] if TILEGYM_AVAILABLE else []),
             "extra_benchmark_configs": [
                 {
                     "vocab_size": model.vocab_size,

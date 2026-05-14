@@ -18,6 +18,13 @@ from utils import run_benchmarks
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD
 from liger_kernel.utils import infer_device
 
+try:
+    from liger_kernel.ops.backends._cutile import tilegym_enabled
+    from liger_kernel.ops.backends._cutile.ops import TILEGYM_AVAILABLE
+except ImportError:
+    tilegym_enabled = None
+    TILEGYM_AVAILABLE = False
+
 device = infer_device()
 
 
@@ -141,7 +148,9 @@ def _setup_fused_linear_jsd(input: SingleBenchmarkRunInput):
     student_input = torch.rand(BT, H, requires_grad=True, dtype=dtype, device=device)
     teacher_input = torch.rand(BT, H, dtype=dtype, device=device)
 
-    if input.kernel_provider == "liger":
+    if input.kernel_provider in ("liger", "tilegym"):
+        if input.kernel_provider == "tilegym" and not TILEGYM_AVAILABLE:
+            raise ImportError("tilegym is not available.")
         lm_head = liger_lm_head_jsd
     elif input.kernel_provider == "torch":
         lm_head = torch_lm_head_jsd
@@ -155,8 +164,13 @@ def bench_speed_fused_linear_jsd(input: SingleBenchmarkRunInput) -> SingleBenchm
     student_input, teacher_input, lm_head = _setup_fused_linear_jsd(input)
     mode = input.kernel_operation_mode
 
-    def fwd():
-        return lm_head(student_input, teacher_input)
+    if input.kernel_provider == "tilegym":
+        def fwd():
+            with tilegym_enabled():
+                return lm_head(student_input, teacher_input)
+    else:
+        def fwd():
+            return lm_head(student_input, teacher_input)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
@@ -188,9 +202,15 @@ def bench_speed_fused_linear_jsd(input: SingleBenchmarkRunInput) -> SingleBenchm
 def bench_memory_fused_linear_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     student_input, teacher_input, lm_head = _setup_fused_linear_jsd(input)
 
-    def full():
-        y = lm_head(student_input, teacher_input)
-        y.backward()
+    if input.kernel_provider == "tilegym":
+        def full():
+            with tilegym_enabled():
+                y = lm_head(student_input, teacher_input)
+                y.backward()
+    else:
+        def full():
+            y = lm_head(student_input, teacher_input)
+            y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
     return SingleBenchmarkRunOutput(
@@ -221,8 +241,13 @@ def bench_speed_fused_linear_jsd_model_config(input: SingleBenchmarkRunInput) ->
     student_input, teacher_input, lm_head = _resolve_model_config_fused_linear_jsd(input)
     mode = input.kernel_operation_mode
 
-    def fwd():
-        return lm_head(student_input, teacher_input)
+    if input.kernel_provider == "tilegym":
+        def fwd():
+            with tilegym_enabled():
+                return lm_head(student_input, teacher_input)
+    else:
+        def fwd():
+            return lm_head(student_input, teacher_input)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -263,9 +288,15 @@ def bench_speed_fused_linear_jsd_model_config(input: SingleBenchmarkRunInput) ->
 def bench_memory_fused_linear_jsd_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     student_input, teacher_input, lm_head = _resolve_model_config_fused_linear_jsd(input)
 
-    def full():
-        y = lm_head(student_input, teacher_input)
-        y.backward()
+    if input.kernel_provider == "tilegym":
+        def full():
+            with tilegym_enabled():
+                y = lm_head(student_input, teacher_input)
+                y.backward()
+    else:
+        def full():
+            y = lm_head(student_input, teacher_input)
+            y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
     return SingleBenchmarkRunOutput(
@@ -313,7 +344,7 @@ if __name__ == "__main__":
             "x_name": "model_config",
             "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
-            "kernel_providers": ["liger", "torch"],
+            "kernel_providers": ["liger", "torch"] + (["tilegym"] if TILEGYM_AVAILABLE else []),
             "extra_benchmark_configs": [
                 {
                     "model_configs": model_configs_info,
@@ -364,7 +395,7 @@ if __name__ == "__main__":
             "x_name": "BT",
             "x_label": "B * T",
             "x_values": [2**i for i in range(10, int(math.log2(config.batch_size * config.seq_len)) + 1)],
-            "kernel_providers": ["liger", "torch"],
+            "kernel_providers": ["liger", "torch"] + (["tilegym"] if TILEGYM_AVAILABLE else []),
             "extra_benchmark_configs": [
                 {
                     "hidden_size": model.hidden_size,

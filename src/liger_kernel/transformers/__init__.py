@@ -244,3 +244,22 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_exaone4",
         ]
     )
+
+# Apply CuTile backend if requested via environment variable. Placed at the
+# very end so that __all__ is fully constructed before this runs — an
+# ImportError here will not leave __all__ in a partially-built state.
+# All submodules above are already loaded at this point, so patching
+# liger_kernel.transformers.jsd / fused_linear_jsd is safe (no circular imports).
+import os as _os
+
+_cutile_backend = _os.getenv("CUTILE_BACKEND", "").strip().lower()
+if _cutile_backend in {"1", "true", "yes", "on", "cutile"}:
+    try:
+        from liger_kernel.ops.backends._cutile import _patch_tilegym_classes
+
+        _patch_tilegym_classes()
+    except ImportError as _exc:
+        raise ImportError(
+            "CUTILE_BACKEND is set but tilegym is not available. "
+            "Install it from the ocean repo."
+        ) from _exc

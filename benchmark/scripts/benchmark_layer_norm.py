@@ -13,7 +13,26 @@ from utils import run_benchmarks
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.utils import infer_device
 
+try:
+    from liger_kernel.ops.backends._cutile import tilegym_enabled
+    from liger_kernel.ops.backends._cutile.ops import TILEGYM_AVAILABLE
+except ImportError:
+    tilegym_enabled = None
+    TILEGYM_AVAILABLE = False
+
 device = infer_device()
+
+
+class _TilegymLayerNormWrapper(torch.nn.Module):
+    """Wraps LigerLayerNorm so that forward runs inside tilegym_enabled()."""
+
+    def __init__(self, base_layer):
+        super().__init__()
+        self.base_layer = base_layer
+
+    def forward(self, x):
+        with tilegym_enabled():
+            return self.base_layer(x)
 
 
 def setup_layer_norm(input: SingleBenchmarkRunInput):
@@ -37,7 +56,12 @@ def setup_layer_norm(input: SingleBenchmarkRunInput):
         dtype=dtype,
         requires_grad=True,
     )
-    if input.kernel_provider == "liger":
+    if input.kernel_provider == "tilegym":
+        if not TILEGYM_AVAILABLE:
+            raise ImportError("tilegym is not available.")
+        base = LigerLayerNorm(hidden_size=hidden_size, eps=eps).to(device).to(dtype)
+        layer = _TilegymLayerNormWrapper(base)
+    elif input.kernel_provider == "liger":
         layer = LigerLayerNorm(hidden_size=hidden_size, eps=eps).to(device).to(dtype)
     elif input.kernel_provider == "huggingface":
         layer = torch.nn.LayerNorm(hidden_size, eps=eps).to(device).to(dtype)
@@ -81,7 +105,7 @@ if __name__ == "__main__":
             overwrite=args.overwrite,
         )
 
-    common_configs["kernel_providers"] = ["liger", "huggingface"]
+    common_configs["kernel_providers"] = ["liger", "huggingface"] + (["tilegym"] if TILEGYM_AVAILABLE else [])
 
     run_benchmarks(
         bench_test_fn=build_speed_bench_fn(setup_layer_norm),

@@ -116,32 +116,36 @@ def _replace_with_vendor_ops():
     Otherwise, all public symbols (not starting with _) are auto-discovered.
 
     Note: Vendor can both override existing ops AND add new vendor-specific ops.
+
+    Note: CuTile backend (tilegym) is enabled via CUTILE_BACKEND=1 env var,
+    handled in liger_kernel/transformers/__init__.py after all submodules load.
+    Use the tilegym_enabled() context manager for fine-grained control.
     """
-    from liger_kernel.ops.backends import get_vendor_for_device
-    from liger_kernel.utils import infer_device
-
-    device = infer_device()
-
-    # Look up vendor info for this device
-    vendor_info = get_vendor_for_device(device)
-    if vendor_info is None:
-        return
-
     try:
         import importlib
+        from liger_kernel.ops.backends import get_vendor_for_device
+        from liger_kernel.utils import infer_device
 
-        vendor_ops = importlib.import_module(vendor_info.module_path)
+        def _apply_ops_module(backend_ops):
+            # Get names to export: use __all__ if defined, otherwise auto-discover
+            names_to_export = getattr(backend_ops, "__all__", None)
 
-        # Get names to export: use __all__ if defined, otherwise auto-discover
-        names_to_export = getattr(vendor_ops, "__all__", None)
+            if names_to_export is None:
+                # Auto-discover: find all public symbols (classes and functions)
+                names_to_export = [name for name in dir(backend_ops) if not name.startswith("_")]
 
-        if names_to_export is None:
-            # Auto-discover: find all public symbols (classes and functions)
-            names_to_export = [name for name in dir(vendor_ops) if not name.startswith("_")]
+            # Replace or add to this module's globals
+            for name in names_to_export:
+                globals()[name] = getattr(backend_ops, name)
 
-        # Replace or add to this module's globals
-        for name in names_to_export:
-            globals()[name] = getattr(vendor_ops, name)
+        device = infer_device()
+
+        # Look up vendor info for this device
+        vendor_info = get_vendor_for_device(device)
+        if vendor_info is None:
+            return
+
+        _apply_ops_module(importlib.import_module(vendor_info.module_path))
 
     except ImportError:
         # Vendor module not available, use default implementations
