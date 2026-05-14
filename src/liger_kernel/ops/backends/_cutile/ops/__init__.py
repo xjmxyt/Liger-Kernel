@@ -16,11 +16,20 @@ No changes to _cutile/__init__.py are ever needed.
 """
 
 from ._spec import PatchSpec  # noqa: F401 — re-exported for op modules to import
+from .cross_entropy import patches as _cross_entropy_patches
 from .fused_linear_jsd import patches as _fljsd_patches
+from .geglu import patches as _geglu_patches
 from .jsd import patches as _jsd_patches
+from .layer_norm import patches as _layer_norm_patches
 
 # To add a new op: import its patches() function and append it here.
-_OP_PATCH_FNS = [_jsd_patches, _fljsd_patches]
+_OP_PATCH_FNS = [
+    _jsd_patches,
+    _fljsd_patches,
+    _layer_norm_patches,
+    _cross_entropy_patches,
+    _geglu_patches,
+]
 
 ALL_PATCHES = []
 _IMPORT_ERRORS = []

@@ -2,7 +2,7 @@ from ._spec import PatchSpec
 
 try:
     from tilegym.suites.liger.cutile.fused_linear_jsd import (
-        FusedLinearJSDFunction as _LigerFusedLinearJSDFunction,
+        FusedLinearJSDCuTileFunction as _LigerFusedLinearJSDFunction,
     )
     _IMPORT_ERROR = None
 except ImportError as exc:

@@ -1,7 +1,7 @@
 from ._spec import PatchSpec
 
 try:
-    from tilegym.suites.liger.cutile.jsd import JSDFunction as _LigerJSDFunction
+    from tilegym.suites.liger.cutile.jsd import JSDCuTileFunction as _LigerJSDFunction
     _IMPORT_ERROR = None
 except ImportError as exc:
     _LigerJSDFunction = None

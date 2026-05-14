@@ -19,7 +19,26 @@ from utils import run_speed_benchmark
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.utils import infer_device
 
+try:
+    from liger_kernel.ops.backends._cutile import tilegym_enabled
+    from liger_kernel.ops.backends._cutile.ops import TILEGYM_AVAILABLE
+except ImportError:
+    tilegym_enabled = None
+    TILEGYM_AVAILABLE = False
+
 device = infer_device()
+
+
+class _TilegymGEGLUMLPWrapper(torch.nn.Module):
+    """Wraps LigerGEGLUMLP so that forward runs inside tilegym_enabled()."""
+
+    def __init__(self, base_layer):
+        super().__init__()
+        self.base_layer = base_layer
+
+    def forward(self, x):
+        with tilegym_enabled():
+            return self.base_layer(x)
 
 
 def _setup_geglu(input: SingleBenchmarkRunInput):
@@ -38,7 +57,12 @@ def _setup_geglu(input: SingleBenchmarkRunInput):
         dtype=cfg["dtype"],
         requires_grad=True,
     )
-    if input.kernel_provider == "liger":
+    if input.kernel_provider == "tilegym":
+        if not TILEGYM_AVAILABLE:
+            raise ImportError("tilegym is not available.")
+        base = LigerGEGLUMLP(config=llama_config).to(device).to(cfg["dtype"])
+        layer = _TilegymGEGLUMLPWrapper(base)
+    elif input.kernel_provider == "liger":
         layer = LigerGEGLUMLP(config=llama_config).to(device).to(cfg["dtype"])
     elif input.kernel_provider == "huggingface":
         layer = LlamaMLP(config=llama_config).to(device).to(cfg["dtype"])
@@ -126,7 +150,7 @@ if __name__ == "__main__":
             "x_name": "model_config",
             "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
-            "kernel_providers": ["liger", "huggingface"],
+            "kernel_providers": ["liger", "huggingface"] + (["tilegym"] if TILEGYM_AVAILABLE else []),
             "extra_benchmark_configs": [
                 {
                     "model_configs": model_configs_info,
@@ -181,7 +205,7 @@ if __name__ == "__main__":
             "x_name": "T",
             "x_label": "sequence length",
             "x_values": [2**i for i in range(10, int(math.log2(config.seq_len)) + 1)],
-            "kernel_providers": ["liger", "huggingface"],
+            "kernel_providers": ["liger", "huggingface"] + (["tilegym"] if TILEGYM_AVAILABLE else []),
             "extra_benchmark_configs": [
                 {
                     "bsz": config.batch_size,
