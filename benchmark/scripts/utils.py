@@ -157,6 +157,17 @@ def run_speed_benchmark(
             rep=rep,
             quantiles=QUANTILES,
         )
+    elif mode == "no-grad-forward":
+
+        def no_grad_forward():
+            with torch.no_grad():
+                fwd_fn()
+
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            no_grad_forward,
+            rep=rep,
+            quantiles=QUANTILES,
+        )
     else:
         raise ValueError(f"Unsupported mode: {mode}. Use 'forward', 'backward', or 'full'.")
     return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
@@ -248,6 +259,13 @@ def _print_benchmarking_banner(metric_name: str, kernel_name: str):
 
 def get_formatted_time():
     return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def get_display_kernel_provider(kernel_provider: str) -> str:
+    impl = os.environ.get("LIGER_KERNEL_IMPL", "").strip().lower()
+    if kernel_provider == "liger" and impl:
+        return f"liger-{impl}"
+    return kernel_provider
 
 
 def get_gpu_name():
@@ -422,7 +440,7 @@ def run_benchmarks(
                 benchmark_run_data = BenchmarkData(
                     kernel_name=kernel_name,
                     kernel_operation_mode=kernel_operation_mode,
-                    kernel_provider=kernel_provider,
+                    kernel_provider=get_display_kernel_provider(kernel_provider),
                     metric_name=metric_name,
                     metric_unit=metric_unit,
                     gpu_name=gpu_name,

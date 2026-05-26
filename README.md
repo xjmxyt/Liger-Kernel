@@ -139,6 +139,8 @@ pip3 install --pre torch torchvision torchaudio --index-url https://download.pyt
 ### Optional Dependencies
 
 - `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
+- `cuda-tile`: Required when enabling the optional cuTile backend on CUDA. Use this when your environment already provides CUDA Toolkit 13.1 or newer, or an existing tileiras compiler installation.
+- `cuda-tile[tileiras]`: Required when enabling the optional cuTile backend with the tileiras compiler installed directly into your Python environment.
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -168,9 +170,25 @@ pip install -e .
 # Setup Development Dependencies
 pip install -e ".[dev]"
 
+# Setup cuTile Dependencies
+pip install -e ".[cutile]"
+
+# Or install cuTile with the optional tileiras compiler
+pip install -e ".[cutile-tileiras]"
+
 # NOTE -> For AMD users only
 pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.3/
 ```
+
+### Enable cuTile Backend
+
+cuTile is an optional CUDA-only DSL implementation. After installing the `cutile` or `cutile-tileiras` extra, enable it explicitly:
+
+```bash
+LIGER_KERNEL_IMPL=cutile python your_script.py
+```
+
+`LIGER_KERNEL_IMPL` selects an opt-in implementation registered with Liger (currently `cutile`). Selecting one on an unsupported device, or without the required dependencies installed, raises an error.
 
 
 ## Getting Started
@@ -260,6 +278,7 @@ loss.backward()
 | Gemma3 (Text)      | `liger_kernel.transformers.apply_liger_kernel_to_gemma3_text`   | RoPE, RMSNorm, GeGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
 | Gemma3 (Multimodal)      | `liger_kernel.transformers.apply_liger_kernel_to_gemma3`   | LayerNorm, RoPE, RMSNorm, GeGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
 | Gemma4 (Text)      | `liger_kernel.transformers.apply_liger_kernel_to_gemma4_text`   | RMSNorm, GeGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
+| Gemma4 (Multimodal)      | `liger_kernel.transformers.apply_liger_kernel_to_gemma4`   | RMSNorm, GeGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
 | Paligemma, Paligemma2, & Paligemma2 Mix      | `liger_kernel.transformers.apply_liger_kernel_to_paligemma`   | LayerNorm, RoPE, RMSNorm, GeGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
 | Qwen2, Qwen2.5, & QwQ      | `liger_kernel.transformers.apply_liger_kernel_to_qwen2`    | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Qwen2-VL, & QVQ       | `liger_kernel.transformers.apply_liger_kernel_to_qwen2_vl`    | RMSNorm, LayerNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
@@ -289,6 +308,7 @@ loss.backward()
 | **Kernel**                      | **API**                                                     |
 |---------------------------------|-------------------------------------------------------------|
 | RMSNorm                         | `liger_kernel.transformers.LigerRMSNorm`                    |
+| Modulated RMSNorm               | `liger_kernel.transformers.LigerModulatedRMSNorm`           |
 | LayerNorm                       | `liger_kernel.transformers.LigerLayerNorm`                  |
 | RoPE                            | `liger_kernel.transformers.liger_rotary_pos_emb`            |
 | SwiGLU                          | `liger_kernel.transformers.LigerSwiGLUMLP`                  |
